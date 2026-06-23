@@ -22,7 +22,7 @@ def _get_odbc_driver() -> str:
     )
 
 
-def open_sql_server_connection(server: str, database: str = "master") -> pyodbc.Connection:
+def open_sql_server_connection(server: str, database: str = "master", autocommit: bool = False) -> pyodbc.Connection:
     driver = _get_odbc_driver()
     connection_string = (
         f"DRIVER={{{driver}}};"
@@ -31,7 +31,7 @@ def open_sql_server_connection(server: str, database: str = "master") -> pyodbc.
         "Trusted_Connection=yes;"
         "TrustServerCertificate=yes;"
     )
-    return pyodbc.connect(connection_string)
+    return pyodbc.connect(connection_string, autocommit=autocommit)
 
 
 def ensure_database_exists(server: str, database: str) -> None:
@@ -39,12 +39,11 @@ def ensure_database_exists(server: str, database: str) -> None:
         return
 
     database_safe = database.replace("]", "]]" )
-    with open_sql_server_connection(server, "master") as conn:
+    with open_sql_server_connection(server, "master", autocommit=True) as conn:
         cursor = conn.cursor()
         cursor.execute(
             f"IF DB_ID(N'{database_safe}') IS NULL CREATE DATABASE [{database_safe}]"
         )
-        conn.commit()
 
 
 def ensure_table_exists(server: str, database: str, table_name: str) -> None:

@@ -12,6 +12,9 @@ dependencies = [
     "pandas",
     "openpyxl",
     "pyodbc",
+    "watchdog>=6.0.0",
+    "pdf2image>=1.17.0",
+    "pytesseract>=0.3.13",
 ]
 
 [project.scripts]
@@ -21,6 +24,7 @@ train = "pdf_to_google_sheets_data_entry_pipeline.main:train"
 replay = "pdf_to_google_sheets_data_entry_pipeline.main:replay"
 test = "pdf_to_google_sheets_data_entry_pipeline.main:test"
 run_with_trigger = "pdf_to_google_sheets_data_entry_pipeline.main:run_with_trigger"
+folder_watcher = "pdf_to_google_sheets_data_entry_pipeline.folder_watcher:cli_entry"
 
 [build-system]
 requires = ["hatchling"]
