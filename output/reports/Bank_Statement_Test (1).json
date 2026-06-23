@@ -1,0 +1,9 @@
+{
+  "document_name": "C:\\Users\\HRIS\\Downloads\\EngineAI\\input_pdfs\\Bank_Statement_Test (1).pdf",
+  "status": "success",
+  "records_extracted": 10,
+  "rows_inserted": 10,
+  "excel_path": "C:\\Users\\HRIS\\Downloads\\EngineAI\\output\\excel\\Bank_Statement_Test (1).xlsx",
+  "database_record_id": 8,
+  "errors": []
+}

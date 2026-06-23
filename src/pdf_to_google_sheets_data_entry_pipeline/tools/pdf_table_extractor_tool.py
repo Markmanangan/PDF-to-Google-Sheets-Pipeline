@@ -4,7 +4,6 @@ from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 from typing import Type
 
-
 class PDFTableExtractorInput(BaseModel):
     """Input schema for PDFTableExtractorTool."""
 
@@ -12,7 +11,6 @@ class PDFTableExtractorInput(BaseModel):
         ...,
         description="Path to the PDF bank statement file to extract transactions from.",
     )
-
 
 class PDFTableExtractorTool(BaseTool):
     """Tool for extracting bank statement transactions from a PDF file.
