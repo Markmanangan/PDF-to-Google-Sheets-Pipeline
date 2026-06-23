@@ -1,4 +1,5 @@
 from pathlib import Path
+from time import time
 from typing import List
 
 import pandas as pd
@@ -47,6 +48,15 @@ def write_to_google_sheet(
 
 def write_to_excel(output_path: str, headers: List[str], rows: List[List]):
     df = pd.DataFrame(rows, columns=headers)
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    df.to_excel(output_path, index=False)
-    return output_path
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    if output_file.exists():
+        try:
+            output_file.unlink()
+        except PermissionError:
+            timestamp = int(time())
+            output_file = output_file.with_name(f"{output_file.stem}_{timestamp}{output_file.suffix}")
+
+    df.to_excel(output_file, index=False)
+    return str(output_file)

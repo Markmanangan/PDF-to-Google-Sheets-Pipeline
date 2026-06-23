@@ -101,7 +101,7 @@ def process_pdf_file(
 
     stem = pdf_file_path.stem
     excel_path = excel_folder / f"{stem}.xlsx"
-    write_to_excel(str(excel_path), headers, rows)
+    actual_excel_path = write_to_excel(str(excel_path), headers, rows)
 
     record_id = insert_extraction_record(
         server=server,
@@ -110,7 +110,7 @@ def process_pdf_file(
         document_name=pdf_file_path.name,
         source_file_path=str(pdf_file_path),
         extracted_rows=first_table,
-        excel_path=str(excel_path),
+        excel_path=str(actual_excel_path),
         validation_status="Success",
         validation_notes=None,
     )
