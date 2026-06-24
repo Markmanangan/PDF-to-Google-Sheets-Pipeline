@@ -147,7 +147,7 @@ def run_folder_watcher(
     worker_thread.start()
 
     # CRASH PROOFING: Sweep the 'In' folder at startup for files dropped while offline
-    existing_pdfs = sorted(in_folder.glob("*.pdf"))
+    existing_pdfs = sorted(in_folder.glob("**/*.pdf"))
     if existing_pdfs:
         print(f"[Startup] Found {len(existing_pdfs)} unprocessed PDFs from while we were offline. Queuing now...")
         for pdf in existing_pdfs:
@@ -156,7 +156,7 @@ def run_folder_watcher(
     # Setup the live Watchdog observer
     event_handler = PDFWatcherHandler(task_queue)
     observer = Observer()
-    observer.schedule(event_handler, str(in_folder), recursive=False)
+    observer.schedule(event_handler, str(in_folder), recursive=True)
     observer.start()
 
     try:
