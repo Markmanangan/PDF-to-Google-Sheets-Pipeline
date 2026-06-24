@@ -68,6 +68,8 @@ class PDFTableExtractorTool(BaseTool):
         # -----------------------------------------------------------------------
         # 2. Extract raw text from PDF
         # -----------------------------------------------------------------------
+        from pathlib import Path as _Path
+        pdf_file_path = str(_Path(pdf_file_path).resolve())
         try:
             with pdfplumber.open(pdf_file_path) as pdf:
                 pages = list(pdf.pages)
@@ -317,19 +319,46 @@ Return ONLY the JSON object:"""
 
 
         try:
-            response = litellm.completion(
-                model="groq/llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}],
-                api_key=api_key,
-                temperature=0.0,
-                max_tokens=4096,
-            )
+            ai_provider = os.environ.get("AI_PROVIDER", "GROQ").upper()
+            
+            if ai_provider == "OLLAMA":
+                model_name = os.environ.get("OLLAMA_MODEL", "ollama/llama3")
+                api_base = os.environ.get("OLLAMA_API_BASE", "http://localhost:11434")
+                response = litellm.completion(
+                    model=model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    api_base=api_base,
+                    temperature=0.0,
+                    max_tokens=4096,
+                )
+            elif ai_provider == "GEMINI":
+                model_name = os.environ.get("GEMINI_MODEL", "gemini/gemini-1.5-flash")
+                response = litellm.completion(
+                    model=model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    api_key=os.environ.get("GEMINI_API_KEY"),
+                    temperature=0.0,
+                    max_tokens=4096,
+                )
+            else:
+                # Default to GROQ
+                model_name = os.environ.get("MODEL", "groq/llama-3.3-70b-versatile")
+                response = litellm.completion(
+                    model=model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    api_key=api_key,
+                    temperature=0.0,
+                    max_tokens=4096,
+                )
+                
             content = response.choices[0].message.content.strip()
 
-            # Strip markdown code blocks if the LLM wrapped the JSON
-            content = re.sub(r"^```(?:json)?\s*", "", content)
-            content = re.sub(r"\s*```$", "", content)
-            content = content.strip()
+            
+            match = re.search(r"\{.*\}", content, re.DOTALL)
+            if match:
+                content = match.group(0)
+            else:
+                content = content.strip()
 
             parsed = json.loads(content)
 

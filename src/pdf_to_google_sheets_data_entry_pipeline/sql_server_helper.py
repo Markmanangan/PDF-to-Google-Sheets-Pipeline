@@ -38,36 +38,19 @@ def ensure_database_exists(server: str, database: str) -> None:
     if database.lower() == "master":
         return
 
-    database_safe = database.replace("]", "]]" )
+    # Call the stored procedure in the master database
+    call_sql = "EXEC sp_EnsureDatabaseExists @DatabaseName = ?;"
     with open_sql_server_connection(server, "master", autocommit=True) as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            f"IF DB_ID(N'{database_safe}') IS NULL CREATE DATABASE [{database_safe}]"
-        )
+        cursor.execute(call_sql, database)
 
 
 def ensure_table_exists(server: str, database: str, table_name: str) -> None:
-    table_safe = table_name.replace("]", "]]" )
-    create_sql = f"""
-IF OBJECT_ID(N'dbo.[{table_safe}]', N'U') IS NULL
-BEGIN
-    CREATE TABLE dbo.[{table_safe}]
-    (
-        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-        DocumentName NVARCHAR(512) NOT NULL,
-        SourceFilePath NVARCHAR(1024) NOT NULL,
-        ExtractionTimestamp DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-        ValidationStatus NVARCHAR(50) NOT NULL DEFAULT 'Pending',
-        ValidationNotes NVARCHAR(MAX) NULL,
-        ExtractedRowsJson NVARCHAR(MAX) NOT NULL,
-        ExcelPath NVARCHAR(1024) NULL,
-        ProcessedAt DATETIME2 NULL
-    );
-END
-"""
+    # Call the stored procedure instead of raw CREATE TABLE
+    call_sql = "EXEC sp_EnsureTableExists @TableName = ?;"
     with open_sql_server_connection(server, database) as conn:
         cursor = conn.cursor()
-        cursor.execute(create_sql)
+        cursor.execute(call_sql, table_name)
         conn.commit()
 
 
@@ -83,34 +66,35 @@ def insert_extraction_record(
     validation_notes: str | None = None,
 ) -> int:
     extracted_json = json.dumps(extracted_rows, ensure_ascii=False)
-    table_safe = table_name.replace("]", "]]" )
-    insert_sql = f"""
-INSERT INTO dbo.[{table_safe}] (
-    DocumentName,
-    SourceFilePath,
-    ValidationStatus,
-    ValidationNotes,
-    ExtractedRowsJson,
-    ExcelPath,
-    ProcessedAt
-)
-OUTPUT INSERTED.Id
-VALUES (?, ?, ?, ?, ?, ?, ?);
-"""
+    processed_at = datetime.utcnow()
+    
+    # We call the stored procedure instead of raw INSERT
+    call_sql = """
+    EXEC sp_InsertExtractionRecord 
+        @TableName = ?, 
+        @DocumentName = ?, 
+        @SourceFilePath = ?, 
+        @ValidationStatus = ?, 
+        @ValidationNotes = ?, 
+        @ExtractedRowsJson = ?, 
+        @ExcelPath = ?, 
+        @ProcessedAt = ?;
+    """
     with open_sql_server_connection(server, database) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            insert_sql,
-            (
-                document_name,
-                source_file_path,
-                validation_status,
-                validation_notes,
-                extracted_json,
-                excel_path,
-                datetime.now(),
-            ),
+            call_sql,
+            table_name,
+            document_name,
+            source_file_path,
+            validation_status,
+            validation_notes,
+            extracted_json,
+            excel_path,
+            processed_at,
         )
         row = cursor.fetchone()
         conn.commit()
-        return int(row[0]) if row else 0
+        if row:
+            return int(row[0])
+        return -1
