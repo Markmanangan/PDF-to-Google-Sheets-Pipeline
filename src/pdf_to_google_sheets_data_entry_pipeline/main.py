@@ -253,7 +253,7 @@ def test():
         'pdf_file_path': r'C:\Users\HRIS\Downloads\CrewAI_Friendly_BPI_Statement.pdf'
     }
     try:
-        PdfToGoogleSheetsDataEntryPipelineCrew().crew().test(n_iterations=int(sys.argv[1]), openai_model_name=sys.argv[2], inputs=inputs)
+        PdfToGoogleSheetsDataEntryPipelineCrew().crew().test(n_iterations=int(sys.argv[1]), eval_llm=sys.argv[2], inputs=inputs)
 
     except Exception as e:
         raise Exception(f"An error occurred while testing the crew: {e}")
