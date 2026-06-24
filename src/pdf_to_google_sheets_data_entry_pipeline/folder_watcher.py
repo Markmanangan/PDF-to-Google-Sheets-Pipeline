@@ -66,21 +66,33 @@ def process_queue_worker(
             )
             print(f"[Worker] Success! Updated sheet. Excel saved to: {result['excel_path']}")
             
-            # Move to Completed
+            # Move to Completed with retry
             dest_path = completed_folder / pdf_path.name
             if dest_path.exists():
                 dest_path = completed_folder / f"{pdf_path.stem}_{datetime.now().strftime('%Y%m%d%H%M%S')}{pdf_path.suffix}"
-            shutil.move(str(pdf_path), str(dest_path))
+            
+            for _ in range(5):
+                try:
+                    shutil.move(str(pdf_path), str(dest_path))
+                    break
+                except PermissionError:
+                    time.sleep(1)
             print(f"[Worker] Moved {pdf_path.name} to Completed folder.")
             
         except Exception as e:
             print(f"[Worker] ERROR processing {pdf_path.name}: {e}")
             
-            # Move to Failed
+            # Move to Failed with retry
             dest_path = failed_folder / pdf_path.name
             if dest_path.exists():
                 dest_path = failed_folder / f"{pdf_path.stem}_{datetime.now().strftime('%Y%m%d%H%M%S')}{pdf_path.suffix}"
-            shutil.move(str(pdf_path), str(dest_path))
+            
+            for _ in range(5):
+                try:
+                    shutil.move(str(pdf_path), str(dest_path))
+                    break
+                except PermissionError:
+                    time.sleep(1)
             
             # Write error log
             error_log_path = dest_path.with_suffix(".txt")
