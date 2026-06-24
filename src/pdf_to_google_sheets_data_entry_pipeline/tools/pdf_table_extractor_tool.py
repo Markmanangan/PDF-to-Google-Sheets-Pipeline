@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 import re
 from pathlib import Path
@@ -155,7 +155,7 @@ class PDFTableExtractorTool(BaseTool):
                         })
 
                 # ---------------------------------------------------------------
-                # 4. AI-powered dynamic extraction
+                # 4. Extraction strategy: structured table (native) or AI (OCR)
                 # ---------------------------------------------------------------
                 if not raw_text.strip():
                     return json.dumps({
@@ -165,7 +165,41 @@ class PDFTableExtractorTool(BaseTool):
                         "errors": ["Could not extract any text from the PDF."],
                     })
 
-                ai_result = self._extract_with_ai(raw_text)
+                # For native-text PDFs try pdfplumber's structured table extractor first.
+                # It uses whitespace geometry to reconstruct columns accurately.
+                pdfplumber_result = None
+                if classification == "NATIVE_TEXT":
+                    with pdfplumber.open(pdf_file_path) as pdf2:
+                        all_pdfplumber_rows: list[list[str]] = []
+                        detected_headers: list[str] = []
+                        for pg in pdf2.pages:
+                            raw_tables = pg.extract_tables() or []
+                            for tbl in raw_tables:
+                                if not tbl:
+                                    continue
+                                # First non-empty row is the header
+                                for i, row in enumerate(tbl):
+                                    clean = [str(c).strip() if c else "" for c in row]
+                                    if any(clean):  # skip totally empty rows
+                                        if not detected_headers:
+                                            detected_headers = clean
+                                        else:
+                                            all_pdfplumber_rows.append(clean)
+                    if detected_headers and all_pdfplumber_rows:
+                        # Pad/trim every row to match header length
+                        n = len(detected_headers)
+                        clean_rows = []
+                        for row in all_pdfplumber_rows:
+                            padded = (row + [""] * n)[:n]
+                            clean_rows.append(padded)
+                        pdfplumber_result = {
+                            "tables": [{"headers": detected_headers, "rows": clean_rows}]
+                        }
+
+                if pdfplumber_result and pdfplumber_result.get("tables"):
+                    ai_result = pdfplumber_result
+                else:
+                    ai_result = self._extract_with_ai(raw_text, is_ocr=(classification == "OCR_REQUIRED"))
 
                 if ai_result.get("error"):
                     return json.dumps({
@@ -204,7 +238,7 @@ class PDFTableExtractorTool(BaseTool):
                 "errors": [f"An error occurred while reading the PDF: {str(exc)}"],
             })
 
-    def _extract_with_ai(self, raw_text: str) -> dict:
+    def _extract_with_ai(self, raw_text: str, is_ocr: bool = False) -> dict:
         """
         Sends raw PDF text to the Groq LLM and asks it to dynamically detect
         the transaction table columns and extract all rows into a standardized
@@ -219,37 +253,71 @@ class PDFTableExtractorTool(BaseTool):
         if not api_key:
             return {"error": "GROQ_API_KEY is not set in your .env file."}
 
-        prompt = f"""You are an expert bank statement parser. Your job is to extract ALL transaction rows from the raw text of a bank statement PDF.
+        if is_ocr:
+            prompt = f"""You are an expert bank statement parser. This text was extracted via OCR from a SCANNED bank statement image.
 
-The bank statement may be from ANY bank (BPI, BDO, Metrobank, UnionBank, etc.) with ANY column layout.
+IMPORTANT: Scanned bank statements often have a SPLIT-COLUMN layout, meaning the OCR text reads:
+1. First: All rows of the LEFT section (Date, Description, Reference columns)
+2. Then: All rows of the RIGHT section (Details, Debit, Credit, Balance columns)
+
+These two sections belong to the SAME table. You must STITCH them together by matching rows positionally (row 1 left + row 1 right = first transaction, row 2 left + row 2 right = second transaction, etc.).
+
+Step 1 — Identify the LEFT section header (e.g. "DATE DESCRIPTION REF") and all its rows.
+Step 2 — Identify the RIGHT section header (e.g. "DETAILS DEBIT AMT CREDIT AMT BALANCE") and all its rows.
+Step 3 — Combine: merged header = left headers + right headers. Each merged row = left row values + right row values.
+Step 4 — Use the EXACT column names as they appear in the scanned text.
 
 Return ONLY a valid JSON object in this exact format — no extra text, no markdown, no code blocks:
 {{
-    "headers": ["Date", "Description", "Reference", "Debit Amt", "Credit Amt", "Balance"],
+    "headers": ["<exact col from left section>", ..., "<exact col from right section>", ...],
     "rows": [
-        ["date", "description", "reference", "debit_amount", "credit_amount", "balance"],
+        ["left_val1", "left_val2", ..., "right_val1", "right_val2", ...],
         ...
     ]
 }}
 
-Rules for extracting:
-- Date: the transaction date exactly as shown (e.g. "06/15/2024", "JUN 15", "15-Jun-2024")
-- Description: the transaction name or narration (e.g. "CASH WITHDRAWAL", "ONLINE TRANSFER", "PAYROLL")
-- Reference: reference/transaction number if shown, otherwise use ""
-- Debit Amt: amount withdrawn/debited as a numeric string (e.g. "1,500.00"), or "" if this is a credit/deposit
-- Credit Amt: amount deposited/credited as a numeric string (e.g. "5,000.00"), or "" if this is a debit/withdrawal
-- Balance: the running balance after this transaction as a numeric string (e.g. "12,345.67")
+Rules:
+- Use the EXACT column names from the scanned text
+- Skip non-transaction rows: table header rows, blank rows, "PREVIOUS BALANCE" carry-forward rows, totals
+- Include EVERY transaction row even if some cells are empty — use "" for empty cells
+- Amount values must be numeric strings: "1,234.56" — no currency symbols
+- Each merged row must have the same number of values as there are merged headers
 
-Important rules:
-- Map column names intelligently: "Withdrawal" = Debit, "Deposit" = Credit, "Posting Date" = Date, "Narration" = Description
-- Skip non-transaction rows: headers, subtotals, opening balance summaries, blank rows, page footers
-- Include EVERY transaction row, even if some fields are empty
-- Amounts must be plain numbers with commas and decimals: "1,234.56" — do NOT include currency symbols
-
-Raw bank statement text:
-{raw_text[:8000]}
+Full OCR text:
+{raw_text}
 
 Return ONLY the JSON object:"""
+        else:
+            prompt = f"""You are an expert bank statement parser. Your job is to extract ALL transaction rows from the raw text of a bank statement PDF.
+
+The bank statement may be from ANY bank (BPI, BDO, Metrobank, UnionBank, etc.) with ANY column layout.
+
+Step 1 — Find the transaction table header row (e.g. "Date", "Description", "Debit", "Credit", "Balance", "Withdrawal", "Deposit", "Narration", "Reference", etc.)
+Step 2 — Use those EXACT column names as the "headers" in your JSON output.
+Step 3 — Extract every data row under that table.
+
+Return ONLY a valid JSON object in this exact format — no extra text, no markdown, no code blocks:
+{{
+    "headers": ["<exact column name from PDF>", "<exact column name from PDF>", ...],
+    "rows": [
+        ["value1", "value2", ...],
+        ...
+    ]
+}}
+
+Rules:
+- Use the EXACT column names as they appear in the PDF (e.g. if the PDF says "Withdrawal", use "Withdrawal" not "Debit")
+- If a column name spans multiple words, keep them as-is (e.g. "Transaction Description", "Posting Date")
+- Skip non-transaction rows: table headers, blank rows, page footers, subtotals, opening/closing balance summary lines
+- Include EVERY transaction row even if some cells are empty — use "" for empty cells
+- Amount values must be numeric strings with commas and decimals: "1,234.56" — no currency symbols (no PHP, $, etc.)
+- Each row must have the same number of values as there are headers
+
+Raw bank statement text:
+{raw_text[:12000]}
+
+Return ONLY the JSON object:"""
+
 
         try:
             response = litellm.completion(
