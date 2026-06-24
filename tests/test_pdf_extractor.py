@@ -31,7 +31,6 @@ def test_sample_bank_statement_extraction(tmp_path):
     written_path = write_to_excel(str(excel_path), table["headers"], table["rows"])
     assert Path(written_path).exists()
 
-
 def test_mark_pdf_extraction(tmp_path):
     os.environ["POPPLER_PATH"] = r"C:\Users\HRIS\Downloads\EngineAI\poppler-26.02.0\Library\bin"
     os.environ["TESSERACT_CMD"] = r"C:\Users\HRIS\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
@@ -60,7 +59,7 @@ def test_mark_pdf_extraction(tmp_path):
     assert table["rows"][1][4] == "" # Debit
     assert table["rows"][1][5] == "20,035.51" # Credit
     assert table["rows"][1][6] == "170,524.14" # Balance
-
+    
     # Row 2: DEC 15
     assert table["rows"][2][0] == "DEC 15"
     assert table["rows"][2][3] == "FROM:NON-BPI TERMINAL"

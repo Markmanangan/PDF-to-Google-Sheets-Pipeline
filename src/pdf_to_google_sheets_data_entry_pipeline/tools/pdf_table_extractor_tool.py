@@ -143,7 +143,7 @@ class PDFTableExtractorTool(BaseTool):
                         if tesseract_cmd:
                             pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
 
-                        ocr_text_pages = [pytesseract.image_to_string(image) for image in images]
+                        ocr_text_pages = [pytesseract.image_to_string(image, config='--psm 6') for image in images]
                         raw_text = "\n\n".join(ocr_text_pages).strip()
 
                     except Exception as exc:
@@ -198,8 +198,10 @@ class PDFTableExtractorTool(BaseTool):
 
                 if pdfplumber_result and pdfplumber_result.get("tables"):
                     ai_result = pdfplumber_result
+                elif classification == "OCR_REQUIRED":
+                    ai_result = self._extract_with_ai(raw_text, is_ocr=True)
                 else:
-                    ai_result = self._extract_with_ai(raw_text, is_ocr=(classification == "OCR_REQUIRED"))
+                    ai_result = self._extract_with_ai(raw_text, is_ocr=False)
 
                 if ai_result.get("error"):
                     return json.dumps({
@@ -256,22 +258,16 @@ class PDFTableExtractorTool(BaseTool):
         if is_ocr:
             prompt = f"""You are an expert bank statement parser. This text was extracted via OCR from a SCANNED bank statement image.
 
-IMPORTANT: Scanned bank statements often have a SPLIT-COLUMN layout, meaning the OCR text reads:
-1. First: All rows of the LEFT section (Date, Description, Reference columns)
-2. Then: All rows of the RIGHT section (Details, Debit, Credit, Balance columns)
-
-These two sections belong to the SAME table. You must STITCH them together by matching rows positionally (row 1 left + row 1 right = first transaction, row 2 left + row 2 right = second transaction, etc.).
-
-Step 1 — Identify the LEFT section header (e.g. "DATE DESCRIPTION REF") and all its rows.
-Step 2 — Identify the RIGHT section header (e.g. "DETAILS DEBIT AMT CREDIT AMT BALANCE") and all its rows.
-Step 3 — Combine: merged header = left headers + right headers. Each merged row = left row values + right row values.
-Step 4 — Use the EXACT column names as they appear in the scanned text.
+IMPORTANT: The OCR process may have collapsed the spacing between the "Debit", "Credit", and "Balance" columns.
+If you see a row with only ONE amount before the balance (e.g. "10,000.00 160,524.14"), you MUST verify if it is a Debit or Credit by doing the math:
+- If (Previous Balance - Amount == Current Balance), then it is a DEBIT.
+- If (Previous Balance + Amount == Current Balance), then it is a CREDIT.
 
 Return ONLY a valid JSON object in this exact format — no extra text, no markdown, no code blocks:
 {{
-    "headers": ["<exact col from left section>", ..., "<exact col from right section>", ...],
+    "headers": ["<exact column name from PDF>", "<exact column name from PDF>", ...],
     "rows": [
-        ["left_val1", "left_val2", ..., "right_val1", "right_val2", ...],
+        ["value1", "value2", ...],
         ...
     ]
 }}
@@ -281,7 +277,8 @@ Rules:
 - Skip non-transaction rows: table header rows, blank rows, "PREVIOUS BALANCE" carry-forward rows, totals
 - Include EVERY transaction row even if some cells are empty — use "" for empty cells
 - Amount values must be numeric strings: "1,234.56" — no currency symbols
-- Each merged row must have the same number of values as there are merged headers
+- Each row must have the same number of values as there are headers
+- CRITICAL: Place the transaction amount in the CORRECT column (Debit vs Credit) based on the math against the running balance!
 
 Full OCR text:
 {raw_text}
