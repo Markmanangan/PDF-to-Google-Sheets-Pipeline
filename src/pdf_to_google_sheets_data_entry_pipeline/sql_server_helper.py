@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -66,7 +66,7 @@ def insert_extraction_record(
     validation_notes: str | None = None,
 ) -> int:
     extracted_json = json.dumps(extracted_rows, ensure_ascii=False)
-    processed_at = datetime.utcnow()
+    processed_at = datetime.now(timezone.utc)
     
     # We call the stored procedure instead of raw INSERT
     call_sql = """

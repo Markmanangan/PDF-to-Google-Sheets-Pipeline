@@ -1,65 +1,35 @@
 #!/usr/bin/env python
+"""PDF → structured data pipeline entry point.
+
+Single-PDF processing is exposed via :func:`process_pdf_file`, which both the
+Flask web UI (``web.py``) and the watchdog-based folder watcher
+(``folder_watcher.py``) call. Continuous automation is handled entirely by
+``folder_watcher.py`` -- the polling watcher that previously lived here has
+been removed in favour of that single canonical implementation.
+
+CLI usage:
+    python main.py process <pdf_path> [<server> <database>] [<table_name>]
+    python main.py run_ui
+"""
 import json
-import os
-import shutil
 import sys
-import time
-from datetime import datetime
 from pathlib import Path
 
-from crewai import LLM
 from pdf_to_google_sheets_data_entry_pipeline.google_sheets_helper import write_to_excel
-from pdf_to_google_sheets_data_entry_pipeline.crew import PdfToGoogleSheetsDataEntryPipelineCrew
 from pdf_to_google_sheets_data_entry_pipeline.sql_server_helper import (
-    ensure_database_exists,
-    ensure_table_exists,
     insert_extraction_record,
 )
 from pdf_to_google_sheets_data_entry_pipeline.tools.pdf_table_extractor_tool import PDFTableExtractorTool
 
 
-def _patch_groq_cache_breakpoint_compat() -> None:
-    """Groq rejects CrewAI's internal cache_breakpoint message field."""
-    if getattr(LLM, "_groq_cache_breakpoint_patched", False):
-        return
-
-    original = LLM._format_messages_for_provider
-
-    def _format_messages_for_provider(self, messages):
-        from crewai.llms.cache import CACHE_BREAKPOINT_KEY
-
-        cleaned = [
-            {key: value for key, value in message.items() if key != CACHE_BREAKPOINT_KEY}
-            for message in messages
-        ]
-        return original(self, cleaned)
-
-    LLM._format_messages_for_provider = _format_messages_for_provider
-    LLM._groq_cache_breakpoint_patched = True
-
-
-def _save_result(result, output_path: Path) -> Path:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    data = None
-    if hasattr(result, "json_dict"):
-        data = result.json_dict
-    elif hasattr(result, "pydantic") and result.pydantic is not None:
-        data = result.pydantic.dict()
-    else:
-        raw = getattr(result, "raw", None)
-        if isinstance(raw, str):
-            try:
-                data = json.loads(raw)
-            except ValueError:
-                data = {"output": raw}
-        else:
-            data = raw
-
-    with output_path.open("w", encoding="utf-8") as output_file:
-        json.dump(data, output_file, indent=2, ensure_ascii=False)
-
-    return output_path
+def _parse_extraction(extraction) -> dict:
+    """Accept either a JSON string or a dict and return a normalised dict."""
+    if isinstance(extraction, str):
+        try:
+            extraction = json.loads(extraction)
+        except ValueError:
+            raise RuntimeError("Extractor returned invalid JSON")
+    return extraction
 
 
 def process_pdf_file(
@@ -70,13 +40,13 @@ def process_pdf_file(
     database: str,
     table_name: str,
 ) -> dict:
+    """Extract the first table from a PDF and write it to Excel + SQL Server.
+
+    Returns a small report dict. Raises ``RuntimeError`` on any failure so the
+    caller (e.g. ``folder_watcher.py``) can route the file to its Failed folder.
+    """
     extractor = PDFTableExtractorTool()
-    extraction = extractor._run(str(pdf_file_path))
-    if isinstance(extraction, str):
-        try:
-            extraction = json.loads(extraction)
-        except ValueError:
-            raise RuntimeError("Extractor returned invalid JSON")
+    extraction = _parse_extraction(extractor._run(str(pdf_file_path)))
 
     if extraction.get("error"):
         raise RuntimeError(extraction["error"])
@@ -131,177 +101,61 @@ def process_pdf_file(
     return report
 
 
-def run(pdf_file_path: str | None = None, output_filename: str = "processing_report.json"):
+def process(pdf_file_path: str, server: str, database: str, table_name: str = "PdfExtractionRecords") -> dict:
+    """Process a single PDF file and save outputs under ``./output``.
+
+    Convenience wrapper around :func:`process_pdf_file` for ad-hoc one-off runs
+    that don't need the full folder-watcher setup.
     """
-    Run the crew and save the final report to a local JSON file.
+    output_dir = Path.cwd() / "output"
+    return process_pdf_file(
+        pdf_file_path=Path(pdf_file_path),
+        excel_folder=output_dir / "excel",
+        report_folder=output_dir / "reports",
+        server=server,
+        database=database,
+        table_name=table_name,
+    )
+
+
+def cli():
+    """Console-script entry point that dispatches subcommands.
+
+    Usage:
+        pdf_to_google_sheets_data_entry_pipeline run_ui
+        pdf_to_google_sheets_data_entry_pipeline process <pdf_path> <server> <database> [<table_name>]
     """
-    _patch_groq_cache_breakpoint_compat()
-    if pdf_file_path is None:
-        pdf_file_path = r'C:\Users\HRIS\Downloads\CrewAI_Friendly_BPI_Statement.pdf'
-
-    inputs = {
-        "pdf_file_path": pdf_file_path,
-    }
-
-    crew = PdfToGoogleSheetsDataEntryPipelineCrew().crew()
-    result = crew.kickoff(inputs=inputs)
-
-    output_dir = Path(os.getcwd()) / "output"
-    output_path = _save_result(result, output_dir / output_filename)
-    print(f"Saved crew result to {output_path}")
-    return result
-
-
-def run_with_trigger(
-    server: str,
-    database: str,
-    table_name: str = "PdfExtractionRecords",
-    input_folder: str | None = None,
-    processed_folder: str | None = None,
-    excel_folder: str | None = None,
-    report_folder: str | None = None,
-    poll_seconds: int = 10,
-):
-    _patch_groq_cache_breakpoint_compat()
-
-    if input_folder is None:
-        input_folder = str(Path.cwd() / "input_pdfs")
-    if processed_folder is None:
-        processed_folder = str(Path.cwd() / "processed_pdfs")
-    if excel_folder is None:
-        excel_folder = str(Path.cwd() / "output" / "excel")
-    if report_folder is None:
-        report_folder = str(Path.cwd() / "output" / "reports")
-
-    input_path = Path(input_folder)
-    processed_path = Path(processed_folder)
-    excel_path = Path(excel_folder)
-    report_path = Path(report_folder)
-
-    input_path.mkdir(parents=True, exist_ok=True)
-    processed_path.mkdir(parents=True, exist_ok=True)
-    excel_path.mkdir(parents=True, exist_ok=True)
-    report_path.mkdir(parents=True, exist_ok=True)
-
-    ensure_database_exists(server, database)
-    ensure_table_exists(server, database, table_name)
-
-    print(f"Watching for PDFs in {input_path}")
-    print(f"Processed files will move to {processed_path}")
-    print(f"Excel output will save to {excel_path}")
-    print(f"Reports will save to {report_path}")
-
-    try:
-        while True:
-            pdf_files = sorted(input_path.glob("*.pdf"))
-            if not pdf_files:
-                time.sleep(poll_seconds)
-                continue
-
-            for pdf_file in pdf_files:
-                print(f"Processing {pdf_file.name}...")
-                try:
-                    result = process_pdf_file(
-                        pdf_file,
-                        excel_path,
-                        report_path,
-                        server,
-                        database,
-                        table_name,
-                    )
-                    print(f"Success: {result['document_name']} -> {result['excel_path']}")
-
-                    destination = processed_path / pdf_file.name
-                    if destination.exists():
-                        destination = processed_path / f"{pdf_file.stem}_{datetime.now().strftime('%Y%m%d%H%M%S')}{pdf_file.suffix}"
-                    shutil.move(str(pdf_file), str(destination))
-                except Exception as exc:
-                    print(f"Failed to process {pdf_file.name}: {exc}")
-            time.sleep(poll_seconds)
-    except KeyboardInterrupt:
-        print("Stopping trigger watcher.")
-
-
-def train():
-    """
-    Train the crew for a given number of iterations.
-    """
-    inputs = {
-        'pdf_file_path': r'C:\Users\HRIS\Downloads\CrewAI_Friendly_BPI_Statement.pdf'
-    }
-    try:
-        PdfToGoogleSheetsDataEntryPipelineCrew().crew().train(n_iterations=int(sys.argv[1]), filename=sys.argv[2], inputs=inputs)
-
-    except Exception as e:
-        raise Exception(f"An error occurred while training the crew: {e}")
-
-def replay():
-    """
-    Replay the crew execution from a specific task.
-    """
-    try:
-        PdfToGoogleSheetsDataEntryPipelineCrew().crew().replay(task_id=sys.argv[1])
-
-    except Exception as e:
-        raise Exception(f"An error occurred while replaying the crew: {e}")
-
-def test():
-    """
-    Test the crew execution and returns the results.
-    """
-    inputs = {
-        'pdf_file_path': r'C:\Users\HRIS\Downloads\CrewAI_Friendly_BPI_Statement.pdf'
-    }
-    try:
-        PdfToGoogleSheetsDataEntryPipelineCrew().crew().test(n_iterations=int(sys.argv[1]), eval_llm=sys.argv[2], inputs=inputs)
-
-    except Exception as e:
-        raise Exception(f"An error occurred while testing the crew: {e}")
-
-if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: main.py <command> [<args>]")
+        print("Usage: pdf_to_google_sheets_data_entry_pipeline <command> [<args>]")
+        print("Commands:")
+        print("  run_ui                                                Start the Flask upload UI")
+        print("  process <pdf_path> <server> <database> [<table_name>] Process one PDF")
         sys.exit(1)
 
     command = sys.argv[1]
-    if command == "run":
-        run()
-    elif command == "train":
-        train()
-    elif command == "replay":
-        replay()
-    elif command == "test":
-        test()
-    elif command == "run_ui":
+    if command == "run_ui":
         from pdf_to_google_sheets_data_entry_pipeline.web import run_app
 
         run_app()
-    elif command == "run_with_trigger":
-        if len(sys.argv) < 4:
-            print(
-                "Usage: main.py run_with_trigger <server> <database> [<table_name>] [<input_folder>] [<processed_folder>] [<excel_folder>] [<report_folder>] [<poll_seconds>]"
-            )
+
+    elif command == "process":
+        if len(sys.argv) < 5:
+            print("Usage: pdf_to_google_sheets_data_entry_pipeline process <pdf_path> <server> <database> [<table_name>]")
             sys.exit(1)
+        pdf_file_path = sys.argv[2]
+        server = sys.argv[3]
+        database = sys.argv[4]
+        table_name = sys.argv[5] if len(sys.argv) > 5 else "PdfExtractionRecords"
 
-        server = sys.argv[2]
-        database = sys.argv[3]
-        table_name = sys.argv[4] if len(sys.argv) > 4 else "PdfExtractionRecords"
-        input_folder = sys.argv[5] if len(sys.argv) > 5 else None
-        processed_folder = sys.argv[6] if len(sys.argv) > 6 else None
-        excel_folder = sys.argv[7] if len(sys.argv) > 7 else None
-        report_folder = sys.argv[8] if len(sys.argv) > 8 else None
-        poll_seconds = int(sys.argv[9]) if len(sys.argv) > 9 else 10
+        result = process(pdf_file_path, server, database, table_name)
+        print(f"Success: {result['document_name']} -> {result['excel_path']}")
+        print(f"  Records extracted: {result['records_extracted']}")
+        print(f"  Database record id: {result['database_record_id']}")
 
-        run_with_trigger(
-            server=server,
-            database=database,
-            table_name=table_name,
-            input_folder=input_folder,
-            processed_folder=processed_folder,
-            excel_folder=excel_folder,
-            report_folder=report_folder,
-            poll_seconds=poll_seconds,
-        )
     else:
         print(f"Unknown command: {command}")
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    cli()

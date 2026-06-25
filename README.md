@@ -1,9 +1,9 @@
 # PdfToGoogleSheetsDataEntryPipeline
 
-This repository implements a PDF → structured data pipeline that extracts tables from PDF bank statements and writes the results to Google Sheets, an Excel fallback, and an SQL Server database. It includes two operation modes:
+This repository implements a PDF → structured data pipeline that extracts tables from PDF bank statements and writes the results to an Excel file and an SQL Server database. It includes two operation modes:
 
 - Web upload UI (`run_ui`) — upload a single PDF via a small Flask server.
-- Folder trigger watcher (`run_with_trigger`) — automatically process PDF files dropped into an input folder.
+- Folder watcher (`folder_watcher`) — automatically processes PDF files dropped into an input folder via watchdog. This is the canonical automation entry point: it is crash-proof (sweeps the `In` folder on startup so files dropped while offline are not lost), routes successful/failed runs to separate folders, and writes a per-file error log on failure.
 
 This document explains setup, configuration, and usage for both modes, plus database setup and security notes.
 
@@ -71,48 +71,55 @@ python .\\src\\pdf_to_google_sheets_data_entry_pipeline\\main.py run_ui
 # open http://127.0.0.1:5000
 ```
 
-Upload a PDF using the web form — the server extracts the first table, writes to Google Sheets (if credentials present), saves an Excel fallback and a JSON report in `output/`.
+Upload a PDF using the web form — the server extracts the first table, writes to Google Sheets (if credentials present), saves an Excel file and a JSON report in `output/`.
 
-2) Folder trigger (automated processing)
+2) Folder watcher (automated processing)
 
-Create (or use defaults) the input and output folders. Then run:
+The folder watcher uses watchdog and manages its own folder layout under a base folder you provide:
+
+```
+<base_folder>/
+  In/         <- drop PDFs here
+  Completed/  <- successfully processed PDFs are moved here
+  Failed/     <- PDFs that failed processing are moved here (with a .txt error log)
+  Excel/      <- per-PDF Excel output
+  Reports/    <- per-PDF JSON report
+```
+
+Run it with:
 
 ```powershell
-python .\\src\\pdf_to_google_sheets_data_entry_pipeline\\main.py run_with_trigger "MSI-WILLYPC\\SQLEXPRESS" PdfPipelineDB
+uv run folder_watcher "C:\Shared_PDF_Folder" "MSI-WILLYPC\SQLEXPRESS" PdfPipelineDB
 ```
 
 Optional arguments:
 - `<table_name>` — database table name (default `PdfExtractionRecords`)
-- `<input_folder>` — path to watch for new PDFs (defaults to `input_pdfs/`)
-- `<processed_folder>` — path where processed PDFs are moved (defaults to `processed_pdfs/`)
-- `<excel_folder>` — path to save per-PDF Excel (defaults to `output/excel/`)
-- `<report_folder>` — path to save per-PDF JSON report (defaults to `output/reports/`)
-- `<poll_seconds>` — watcher interval in seconds (default 10)
 
-Example with custom folders:
+To run the watcher hidden in the background on Windows, use the provided launcher:
 
 ```powershell
-python .\\src\\pdf_to_google_sheets_data_entry_pipeline\\main.py run_with_trigger "MSI-WILLYPC\\SQLEXPRESS" PdfPipelineDB PdfExtractionRecords "C:\\\\Input" "C:\\\\Processed" "C:\\\\ExcelOut" "C:\\\\Reports" 5
+wscript .\start_watcher_hidden.vbs
 ```
+
+Stop it with `.\stop_watcher.bat`.
 
 When a PDF is processed successfully the pipeline will:
 
 1. Extract tables using `src/pdf_to_google_sheets_data_entry_pipeline/tools/pdf_table_extractor_tool.py`.
-2. Save an Excel fallback using `src/pdf_to_google_sheets_data_entry_pipeline/google_sheets_helper.py::write_to_excel`.
+2. Save an Excel file using `src/pdf_to_google_sheets_data_entry_pipeline/google_sheets_helper.py::write_to_excel`.
 3. Insert a record into the SQL Server table using `src/pdf_to_google_sheets_data_entry_pipeline/sql_server_helper.py` (the `ExtractedRowsJson` holds the table JSON).
 4. Write a JSON report to the reports folder.
-5. Move the original PDF to the processed folder (timestamped if name collision).
+5. Move the original PDF to the `Completed` folder (timestamped if name collision).
 
 ## Files and folders
 
-- `src/pdf_to_google_sheets_data_entry_pipeline/main.py` — entrypoint and new `run_with_trigger` watcher
+- `src/pdf_to_google_sheets_data_entry_pipeline/main.py` — entry point (`process` and `run_ui` commands) and `process_pdf_file()` (the core single-file pipeline)
+- `src/pdf_to_google_sheets_data_entry_pipeline/folder_watcher.py` — canonical watchdog-based automation (In/Completed/Failed/Excel/Reports folders)
 - `src/pdf_to_google_sheets_data_entry_pipeline/tools/pdf_table_extractor_tool.py` — PDF extraction logic (pdfplumber + optional OCR)
 - `src/pdf_to_google_sheets_data_entry_pipeline/google_sheets_helper.py` — Google Sheets + Excel helpers
-- `src/pdf_to_google_sheets_data_entry_pipeline/sql_server_helper.py` — SQL Server connection, table ensure, insert helper
+- `src/pdf_to_google_sheets_data_entry_pipeline/sql_server_helper.py` — SQL Server connection and stored-procedure helpers
 - `src/pdf_to_google_sheets_data_entry_pipeline/web.py` — Flask upload UI
-- `input_pdfs/` — default watched folder (created at runtime)
-- `processed_pdfs/` — moved files after processing
-- `output/excel/` — Excel fallbacks
+- `output/excel/` — Excel output (one-off runs via `process` or `run_ui`)
 - `output/reports/` — JSON processing reports
 
 ## Troubleshooting
@@ -145,7 +152,7 @@ Then restart your terminal and rerun the watcher.
 
 ## License & Support
 
-This project is provided as-is for your internal use. For questions about the crewAI integration or agent behavior see `src/pdf_to_google_sheets_data_entry_pipeline/config/agents.yaml` and `config/tasks.yaml`.
+This project is provided as-is for your internal use.
 
 ---
 

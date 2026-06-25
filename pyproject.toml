@@ -18,20 +18,12 @@ dependencies = [
 ]
 
 [project.scripts]
-pdf_to_google_sheets_data_entry_pipeline = "pdf_to_google_sheets_data_entry_pipeline.main:run"
-run_crew = "pdf_to_google_sheets_data_entry_pipeline.main:run"
-train = "pdf_to_google_sheets_data_entry_pipeline.main:train"
-replay = "pdf_to_google_sheets_data_entry_pipeline.main:replay"
-test = "pdf_to_google_sheets_data_entry_pipeline.main:test"
-run_with_trigger = "pdf_to_google_sheets_data_entry_pipeline.main:run_with_trigger"
+pdf_to_google_sheets_data_entry_pipeline = "pdf_to_google_sheets_data_entry_pipeline.main:cli"
 folder_watcher = "pdf_to_google_sheets_data_entry_pipeline.folder_watcher:cli_entry"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
-
-[tool.crewai]
-type = "crew"
 
 [tool.uv]
 override-dependencies = ["litellm<=1.82.6"]
